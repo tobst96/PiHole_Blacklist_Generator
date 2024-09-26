@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from tqdm import tqdm  # Fortschrittsanzeige
 from threading import Lock
 import logging
+import os
 import time
 
 # Logger konfigurieren
@@ -20,6 +21,10 @@ logging.basicConfig(level=logging.INFO,
 
 # SQLite-Datenbank initialisieren
 db_lock = Lock()  # Lock für den Datenbankzugriff
+# Maximale Größe für eine Blocklist-Datei (24 MB)
+MAX_FILE_SIZE_MB = 24
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
 
 def init_db():
     conn = sqlite3.connect('blocklist.db', check_same_thread=False)
@@ -107,19 +112,48 @@ def parse_blocklist_ini():
 
 # URLs aus der Datenbank in blocklist.txt speichern
 def save_to_blocklist_txt():
-    if os.path.exists('blocklist.txt'):
-        os.remove('blocklist.txt')
+    # Datei-Index für gesplittete Dateien
+    file_index = 1
+    current_file_size = 0
+
+    # Dateiname für die erste Blocklist-Datei
+    blocklist_filename = f'blocklist_{file_index}.txt'
+    
+    # Lösche alte Blocklist-Dateien, falls sie existieren
+    for file in os.listdir('.'):
+        if file.startswith('blocklist_') and file.endswith('.txt'):
+            os.remove(file)
+
     with db_lock:
         conn = sqlite3.connect('blocklist.db', check_same_thread=False)
         c = conn.cursor()
         c.execute('SELECT DISTINCT url FROM urls')
         unique_urls = c.fetchall()
-        
-        with open('blocklist.txt', 'w') as f:
-            for url in unique_urls:
-                f.write(f"{url[0]}\n")
-        
         conn.close()
+
+    # Öffne die erste Datei
+    blocklist_file = open(blocklist_filename, 'w')
+    
+    for url in unique_urls:
+        url_line = f"{url[0]}\n"
+        
+        # Prüfe, ob das Hinzufügen dieser URL die Dateigröße über 24 MB bringt
+        if current_file_size + len(url_line.encode('utf-8')) > MAX_FILE_SIZE_BYTES:
+            # Datei schließen und eine neue Datei öffnen
+            blocklist_file.close()
+            file_index += 1
+            blocklist_filename = f'blocklist_{file_index}.txt'
+            blocklist_file = open(blocklist_filename, 'w')
+            current_file_size = 0  # Zurücksetzen der Dateigröße für die neue Datei
+            
+        # Schreibe die URL in die aktuelle Datei und aktualisiere die Dateigröße
+        blocklist_file.write(url_line)
+        current_file_size += len(url_line.encode('utf-8'))
+
+    # Schließe die letzte Datei
+    blocklist_file.close()
+
+    logging.info(f"Blocklist wurde in {file_index} Datei(en) gespeichert.")
 
 # Funktion zum Hinzufügen von URLs aus everyblocklist.txt
 def add_urls_from_everyblocklist():
